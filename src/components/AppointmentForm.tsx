@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { appointmentsOverlap } from '../appointments'
 import { localIsoDate, formatPersonName } from '../format'
 import { useMessages } from '../i18n'
 import { currentAppointment } from '../record'
@@ -184,24 +185,59 @@ export function AppointmentForm({
     reason: m.appointment.reasonError,
   }
 
+  const chosenPatientId = lockedPatientId ?? editing?.patientId ?? patientId
+  const roomId = editingRevision?.roomId ?? state.rooms[0]?.id ?? 'room-1'
+  const durationMinutes = Number(duration)
+  const nextStatus = isEditing ? status : 'scheduled'
+  const overlapWarning = useMemo(() => {
+    if (nextStatus === 'cancelled') return false
+    if (!date || timeToMinutes(time) === null) return false
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 10 || durationMinutes > 240) return false
+    if (!state.patients.some((patient) => patient.id === chosenPatientId)) return false
+    if (!clinicians.some((member) => member.id === providerId)) return false
+    return appointmentsOverlap(state.appointments, {
+      date,
+      time,
+      durationMinutes,
+      providerId,
+      roomId,
+      patientId: chosenPatientId,
+      excludeId: editingAppointmentId,
+    })
+  }, [
+    chosenPatientId,
+    clinicians,
+    date,
+    durationMinutes,
+    editingAppointmentId,
+    nextStatus,
+    providerId,
+    roomId,
+    state.appointments,
+    state.patients,
+    time,
+  ])
+
   function submit(event: FormEvent) {
     event.preventDefault()
     const next: string[] = []
-    const chosenPatient = lockedPatientId ?? editing?.patientId ?? patientId
+    const chosenPatient = chosenPatientId
     if (!state.patients.some((patient) => patient.id === chosenPatient)) next.push('patient')
     if (!date) next.push('date')
     else if (!editingAppointmentId && date < localIsoDate()) next.push('past')
     const minutesOfDay = timeToMinutes(time)
     if (minutesOfDay === null) next.push('time')
     else if (minutesOfDay < CLINIC_OPEN_MINUTES || minutesOfDay > CLINIC_CLOSE_MINUTES) next.push('timeRange')
-    const minutes = Number(duration)
+    const minutes = durationMinutes
     if (!Number.isInteger(minutes) || minutes < 10 || minutes > 240) next.push('duration')
     if (!clinicians.some((member) => member.id === providerId)) next.push('provider')
     if (!reason.trim()) next.push('reason')
     setErrors(next)
     if (next.length > 0) return
-    const roomId = editingRevision?.roomId ?? state.rooms[0]?.id ?? 'room-1'
-    const nextStatus = isEditing ? status : 'scheduled'
+    if (overlapWarning) {
+      announce(m.appointment.overlapWarning)
+      return
+    }
     setSaving(true)
     window.setTimeout(() => {
       if (editingAppointmentId) {
@@ -260,6 +296,11 @@ export function AppointmentForm({
             ))}
           </ul>
         </div>
+      ) : null}
+      {overlapWarning ? (
+        <p className="form-warning" role="status">
+          {m.appointment.overlapWarning}
+        </p>
       ) : null}
       {lockedPatientId || editingAppointmentId ? null : (
         <div className="field" ref={patientBoxRef}>

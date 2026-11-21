@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { openSlotStarts } from '../appointments'
+import { AppointmentForm } from '../components/AppointmentForm'
 import { AppointmentsStatusChart, type ChartRange } from '../components/AppointmentsStatusChart'
 import { EmptyState } from '../components/States'
 import { useAnnounce } from '../components/Shell'
@@ -18,6 +20,8 @@ import { useMessages } from '../i18n'
 import { currentAppointment, currentTreatment, invoiceBalance } from '../record'
 import { useClinic } from '../store'
 import { fill } from '../text'
+
+const OPEN_SLOT_PREVIEW = 7
 
 type ApptRow = {
   appointment: { id: string; patientId: string; kind: 'appointment' | 'follow_up' }
@@ -183,6 +187,17 @@ export function TodayPage() {
   const [selectedDay, setSelectedDay] = useState(today)
   const [selectedMonth, setSelectedMonth] = useState(() => startOfMonth(today))
   const [selectedYear, setSelectedYear] = useState(() => Number(today.slice(0, 4)))
+  const [scheduleSlot, setScheduleSlot] = useState<{ date: string; time: string } | null>(null)
+  const [scheduleSaved, setScheduleSaved] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!scheduleSlot) return
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setScheduleSlot(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [scheduleSlot])
 
   const dayStats = useMemo(() => computePeriodStats(state, 'day', selectedDay), [state, selectedDay])
   const monthStats = useMemo(() => computePeriodStats(state, 'month', selectedMonth), [state, selectedMonth])
@@ -332,6 +347,11 @@ export function TodayPage() {
 
           <div className="overview-side-panel stack">
             <h2 id="overview-upcoming">{m.today.upcoming}</h2>
+            {scheduleSaved ? (
+              <p className="meta" role="status">
+                {scheduleSaved}
+              </p>
+            ) : null}
             <DayGroup
               title={fill(m.today.todayLabel, {
                 date: formatDate(today, state.settings.intlLocale),
@@ -356,8 +376,41 @@ export function TodayPage() {
               }}
             />
           </div>
+
+          <OpenSlotsPanel
+            date={today}
+            onOpenSlot={(time) => {
+              setScheduleSaved(null)
+              setScheduleSlot({ date: today, time })
+            }}
+          />
         </aside>
       </div>
+
+      {scheduleSlot ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setScheduleSlot(null)
+          }}
+        >
+          <div className="modal-panel" role="dialog" aria-modal="true" aria-label={m.appointment.scheduleAppointment}>
+            <AppointmentForm
+              kind="appointment"
+              compact
+              defaultDate={scheduleSlot.date}
+              defaultTime={scheduleSlot.time}
+              onCreated={() => {
+                setScheduleSaved(m.appointment.savedAppointment)
+                announce(m.appointment.savedAppointment)
+                setScheduleSlot(null)
+              }}
+              onCancel={() => setScheduleSlot(null)}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -496,6 +549,49 @@ function DayGroup({
   )
 }
 
+function OpenSlotsPanel({ date, onOpenSlot }: { date: string; onOpenSlot: (time: string) => void }) {
+  const { state } = useClinic()
+  const m = useMessages()
+  const [expanded, setExpanded] = useState(false)
+  const openSlots = useMemo(() => openSlotStarts(state.appointments, date), [state.appointments, date])
+  const visibleSlots = expanded ? openSlots : openSlots.slice(0, OPEN_SLOT_PREVIEW)
+  const hiddenCount = Math.max(0, openSlots.length - OPEN_SLOT_PREVIEW)
+
+  return (
+    <section className="overview-side-panel overview-open-panel stack" aria-labelledby="overview-open-slots">
+      <h2 id="overview-open-slots">{m.today.openSlots}</h2>
+      {openSlots.length === 0 ? (
+        <p className="meta">{m.today.openSlotsEmpty}</p>
+      ) : (
+        <div className="overview-slot-chips">
+          {visibleSlots.map((time) => (
+            <button
+              key={time}
+              type="button"
+              className="overview-slot-chip"
+              aria-label={fill(m.today.openSlotLabel, {
+                time: formatTime(time, state.settings.intlLocale),
+              })}
+              onClick={() => onOpenSlot(time)}
+            >
+              {formatTime(time, state.settings.intlLocale)}
+            </button>
+          ))}
+          {hiddenCount > 0 ? (
+            <button
+              type="button"
+              className="overview-slot-chip overview-slot-more"
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? m.today.openSlotsShowLess : fill(m.today.openSlotsMore, { count: hiddenCount })}
+            </button>
+          ) : null}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function AppointmentRow({
   row,
   sent,
@@ -505,19 +601,36 @@ function AppointmentRow({
   sent: boolean
   onContact: () => void
 }) {
-  const { state } = useClinic()
+  const { state, reviseAppointment } = useClinic()
   const m = useMessages()
+  const announce = useAnnounce()
   const patient = state.patients.find((item) => item.id === row.appointment.patientId)
   if (!patient) return null
 
-  const canContact = row.revision.status !== 'cancelled' && Boolean(patient.phoneDigits)
+  const status = row.revision.status
+  const canContact = status !== 'cancelled' && Boolean(patient.phoneDigits)
   const name = formatPersonName(patient, state.settings.nameOrder)
   const start = formatTime(row.revision.time, state.settings.intlLocale)
   const end = formatTime(addMinutesToTime(row.revision.time, row.revision.durationMinutes), state.settings.intlLocale)
   const when = `${start} – ${end}`
 
+  function setStatus(next: 'confirmed' | 'cancelled') {
+    const target = status === next ? 'scheduled' : next
+    if (target === status) return
+    reviseAppointment(row.appointment.id, {
+      date: row.revision.date,
+      time: row.revision.time,
+      durationMinutes: row.revision.durationMinutes,
+      providerId: row.revision.providerId,
+      roomId: row.revision.roomId,
+      status: target,
+      reason: row.revision.reason,
+    })
+    announce(m.today.statusUpdated)
+  }
+
   return (
-    <li className={`overview-appt${row.revision.status === 'cancelled' ? ' is-cancelled' : ''}`}>
+    <li className={`overview-appt${status === 'cancelled' ? ' is-cancelled' : ''}${status === 'confirmed' ? ' is-confirmed' : ''}`}>
       <div className="overview-avatar" aria-hidden="true">
         {initials(patient.givenName, patient.familyName)}
       </div>
@@ -528,18 +641,38 @@ function AppointmentRow({
         <p className="meta">{when}</p>
         <p className="overview-appt-reason">{row.revision.reason}</p>
       </div>
-      {canContact ? (
-        <button
-          type="button"
-          className={`button overview-contact${sent ? ' is-sent' : ' button-secondary'}`}
-          onClick={onContact}
-          disabled={sent}
-        >
-          {sent ? m.today.contactSent : m.today.contact}
-        </button>
-      ) : (
-        <span className="overview-contact-spacer" aria-hidden="true" />
-      )}
+      <div className="overview-appt-actions">
+        {canContact ? (
+          <button
+            type="button"
+            className={`button overview-contact${sent ? ' is-sent' : ' button-secondary'}`}
+            onClick={onContact}
+            disabled={sent}
+          >
+            {sent ? m.today.contactSent : m.today.contact}
+          </button>
+        ) : (
+          <span className="overview-contact-spacer" aria-hidden="true" />
+        )}
+        <div className="overview-status-toggle" role="group" aria-label={m.today.statusActions}>
+          <button
+            type="button"
+            className={`overview-status-btn status-confirmed${status === 'confirmed' ? ' is-active' : ''}`}
+            aria-pressed={status === 'confirmed'}
+            onClick={() => setStatus('confirmed')}
+          >
+            {m.today.markConfirmed}
+          </button>
+          <button
+            type="button"
+            className={`overview-status-btn status-cancelled${status === 'cancelled' ? ' is-active' : ''}`}
+            aria-pressed={status === 'cancelled'}
+            onClick={() => setStatus('cancelled')}
+          >
+            {m.today.markCancelled}
+          </button>
+        </div>
+      </div>
     </li>
   )
 }

@@ -165,7 +165,7 @@ export function seedState(): ClinicState {
       addressPreset: 'street-city',
     },
     staff: [
-      { id: 'staff-noa', givenName: 'Lina', familyName: 'Harb', role: 'dentist' },
+      { id: 'staff-noa', givenName: 'Hiba', familyName: 'Awad', role: 'dentist' },
       { id: 'staff-adam', givenName: 'Adam', familyName: 'Qasem', role: 'dentist' },
       { id: 'staff-sara', givenName: 'Reem', familyName: 'Saleh', role: 'hygienist' },
       { id: 'staff-maya', givenName: 'Dalia', familyName: 'Awad', role: 'receptionist' },
@@ -854,7 +854,7 @@ export function seedState(): ClinicState {
   }
 }
 
-export const STORAGE_KEY = 'sycamore-dental-demo-v6'
+export const STORAGE_KEY = 'sycamore-dental-demo-v7'
 
 export function serializeState(state: ClinicState) {
   return JSON.stringify({ version: 1, state })

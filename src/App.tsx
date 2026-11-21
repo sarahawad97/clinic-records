@@ -15,7 +15,7 @@ export function App() {
   if (phase === 'loading') return <LoadingScreen />
   if (phase === 'error') return <ErrorScreen onRestore={restoreDemo} />
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || undefined}>
       <Shell>
         <Routes>
           <Route path="/" element={<TodayPage />} />
